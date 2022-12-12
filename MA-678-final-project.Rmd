@@ -1,0 +1,471 @@
+---
+title: "Report of MA678 Final Project"
+author: "Xu Luo"
+date: "2022-12-06"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+## Load the packages
+```{r include=FALSE}
+library(readr)
+library(tidyverse)
+library(stringr)
+library(rstanarm)
+library(knitr)
+library(magrittr)
+library(kableExtra)
+library(gridExtra)
+library(lubridate)
+library(car) 
+library(lme4)
+library(arm)
+library(lmerTest)
+library(lattice)
+require(gridExtra)
+library(ggplot2)
+library(PerformanceAnalytics)
+library(rstanarm)
+library(merTools)
+library(dplyr)
+```
+
+
+
+## Absract
+Football is the most popular sport in the world and the transfer market of football players is the most valuable market among all sports. In 2022, the player with the highest transfer value is Kylian Mbappe, whose value is up to 205 millions euros. The football clubs buy in players for many reasons, including enhancing their attack or defend ability, marketing, and so on. Thus, many factors could affect the transfer value of the players. To find out the effect of this factors, I used the FIFA players data and built a multilevel model with group level Position and League. The results show that the value of the players on different positions are affected more or less by different factors. For example, the value of central back players are more affected by their defending ability. This report includes 4 parts: Introduction, Methodology, Result, and Discussion.
+
+
+## Introduction
+When a club decides whether to buy a player, the attributes of the players are always considered first (e.g. age, pace, shooting, defending, passing). Moreover,the clubs prefer different strengths when they consider the players on different positions. For example, the clubs may demand the striker has more pace and shooting skills while they need the midfielders pass and dribble well. They are willing to pay more transfer fees for the players who have corresponding abilities on the exact positions.
+
+Besides, players from better leagues are usually more valuable in the deals between the clubs, since the players who play well in the low level league may perform bad in the upper level leagues. Players in the upper level league also gain more exposure to the media and has higher reputation, which may lead to higher business and marketing value.
+
+In addition, the contract length and the wage in different leagues are also business factors that affect transfer value.A great example of this is Eduardo Camavinga. In 2020, his value at that time was reported as being as high as £90m. But Real Madrid only pay £35m to buy him in 2022 because Camavinga had just a year left on his deal and could have penned a deal with someone for free.
+
+Therefore, I try to built multilevel models to figure out the effect of fixed effects(e.g. age, wage, international reputation and so on) and random effects(Positions and Leagues)
+
+\newpage
+
+## Methodology
+## Data
+In the past decades, football players and football matches has generated a huge amount of data, which has been used by the clubs to improve their tactics or strategies. However, most of these data are on the team-levels. To analyse the factors that affect the player's value, more specific data about the individual player are important. In this research, I proposed the use of FIFA 22 game data from EA Sports for the study. Since 1995 the FIFA football video games provide an extensive and coherent scout of players worldwide. Player's information like wage and contract expiration date are collected clearly by EA. Other attributes like pace, shooting and defending are also included. Thus, the FIFA 22 game data from Kaggle(https://www.kaggle.com/datasets/stefanoleone992/fifa-22-complete-player-dataset?select=players_22.csv) is appropriate for the analysis.
+
+But data cleaning is still necessary before the modelling. Here I select the columns I need and subset a new data frame "val_columns". Then I exclude all the Goal Keepers from the data set since the evaluation of GK's value is totally different from other positions. NA values are also removed from the data. For the player's position, I noticed that some players could play multiple positions. So I split the "player_positions" columns into three and choose the first column as player's official position.
+Additionally, the I add a new column called "contract_due_in" by subtracting the contract expiration date by 2021.
+Last, I filter the top 9 leagues of the data since the original data set includes too many players and low level leagues, which may leads to outliers.
+
+After the manipulations above, I form a data set of 4139 players and 17 columns:
+
+| column names         | explanation                                     |
+| :--:                 | :-----                                          |
+| sofifa_id            | player ID on sofifa                             |
+| short_name           | player short name                               |
+| official_position    | Position of player                              |
+| overall              | player current overall attribute                |
+| potential            | player potential overall attribute              |
+| value_eur            | player value (in EUR)                           |
+| wage_eur             | player weekly wage (in EUR)                     |
+| age                  | player age                                      |
+| club_contract_until  | contract expiration date                        |
+| international_repu.. | international reputation                        |
+| pace                 | player speed attribute                          |
+| shooting             | player shooting attribute                       |
+| passing              | player passing attribute                        |
+| dribbling            | player dribbling attribute                      |
+| defending            | player defend attribute                         |
+| physic               | player heading accuracy                         |
+| contract_due_in      | contract expiration date                        |
+
+\newpage
+
+## EDA
+
+```{r include=FALSE}
+## Read the data set of FIFA 22
+players <- read.csv("players_FIFA22.csv")
+
+
+```
+
+```{r include=FALSE}
+## Selected needed columns:
+val_columns <- players %>% dplyr::select(sofifa_id,short_name, player_positions, overall,potential,value_eur,wage_eur,age,league_name,club_contract_valid_until,international_reputation,release_clause_eur,pace,shooting,passing,defending,dribbling,physic)
+
+```
+
+```{r include=FALSE}
+## Remove the GK(Goal Keepers), which is special among the players.
+val_columns <- val_columns[!grepl(paste("GK",collapse="|"),val_columns$`player_positions`),]
+
+```
+
+```{r include=FALSE}
+## Some players is in the free market and don't have contract, which should be excluded since they may produce NA value.
+val_columns <- val_columns[complete.cases(val_columns), ]
+
+# check whether there are still NA value 
+sapply(val_columns, function(x) sum(is.na(x)))
+```
+
+```{r include=FALSE}
+## Usually, young players with huge potentials in the future may also be more valuable in the transfermarket, so the gap between potential rating and overall rating is another important index.
+#val_columns = val_columns %>% mutate(gap = potential - overall)
+```
+
+```{r include=FALSE}
+## Contract Expiration:
+val_columns = val_columns %>% mutate(contract_due_in = club_contract_valid_until - 2021)
+
+```
+
+```{r include=FALSE}
+## Some players play in multiple positions, I split the position by "," and choose the first position as their official position:
+FIFA_players <- val_columns %>% separate(col=`player_positions`,
+                into = c("official_position", "position2", "position3"),
+                sep = ",",
+                fill = "right")
+
+# Remove the second and third positions.
+FIFA_players <- FIFA_players %>% dplyr::select(-c(position2, position3))
+
+```
+```{r include=FALSE}
+## Re-classify the position
+#Edit into more appropriate positional titles
+# FIFA_players$official_position <- ifelse(FIFA_players$official_position %in% c("LB", "LWB", "RWB", "RB", "CB"), "Back",
+#                                               ifelse(FIFA_players$official_position %in% c("LM", "CAM", "RM","CDM","CM"), "Midfield",
+#                                                      ifelse(FIFA_players$official_position %in% c("RW", "ST", "LW","CF"), "Forward","other"
+#                                                             )))
+# 
+# FIFA_players$official_position <- factor(FIFA_players$official_position, levels = c("Back","Midfield","Forward"))
+# 
+# #check if our change worked
+# levels(FIFA_players$official_position)
+# View(FIFA_players)
+```
+```{r include=FALSE}
+## Sort out the players from top 9 leagues.
+FIFA_players <- FIFA_players %>% filter(league_name == "English Premier League" | league_name == "Spain Primera Division" | league_name == "Italian Serie A" | league_name == "German 1. Bundesliga" | league_name == "French Ligue 1" | league_name =="Holland Eredivisie" | league_name == "Portuguese Liga ZON SAGRES" | league_name == "Campeonato Brasileiro Série A" | league_name == "Argentina Primera División")
+```
+
+
+After the data cleaning, I got a data set of 4139 players and 17 variables. But which variables could be used in analysis is still needed the following analysis.
+
+## EDA analysis
+## Value v.s. overall scores in different groups: positions, league_level
+
+```{r echo=FALSE, fig.cap="Value v.s. overall scores in different groups: positions, league_level"}
+overall_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(overall + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Overall Score(by positions)", x = "log(Overall)", y = "log(Value)")
+overall_positions
+
+overall_league <- ggplot(data = FIFA_players) + 
+  aes(x = log(overall + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Overall Score(by leagues)", x = "log(Overall)", y = "log(Value)")
+overall_league
+```
+Figure 1 illustrates the relationship between value and overall score, while fig(a) is in position level and
+fig(b) is in league level. However, whatever the level, value show the increasing trend as points going up.
+In different positions and leagues, the intercepts and slopes show little differences. I also draw the graph of value versus wage_eur, age, potentials, contract_due_in, reputation, pace,shooting,passing,defending,dribbling,physic, and the figures are similar. Thus
+I put them in the appendix.
+
+
+
+## Model fitting
+As I mentioned in the Introduction, positions and leagues may have random effects on the model, I decide to use multilevel model. Since all variables
+are more or less skewed and have heavy tails, I adjust all variable to log(variable) to create log data frame. Next, the Pearson correlation matrix is created to decide the predictors selection.
+
+```{r include=FALSE}
+log_FIFA_players <- FIFA_players %>% dplyr::select(sofifa_id, official_position, league_name, value_eur, overall,wage_eur,age,international_reputation,pace,shooting,passing,defending,dribbling,physic,contract_due_in) %>% data.frame()
+
+
+log_FIFA_players$official_position <- factor(log_FIFA_players$official_position)
+log_FIFA_players$league_name <- factor(log_FIFA_players$league_name)
+
+log_FIFA_players$overall <- log(log_FIFA_players$overall +1)
+log_FIFA_players$wage_eur <- log(log_FIFA_players$wage_eur +1)
+log_FIFA_players$age <- log(log_FIFA_players$age +1)
+log_FIFA_players$value_eur <- log(log_FIFA_players$value_eur +1 )
+
+log_FIFA_players$international_reputation <- log(log_FIFA_players$international_reputation +1 )
+log_FIFA_players$pace <- log(log_FIFA_players$pace +1 )
+log_FIFA_players$shooting <- log(log_FIFA_players$shooting +1)
+log_FIFA_players$passing <- log(log_FIFA_players$passing +1)
+log_FIFA_players$defending <- log(log_FIFA_players$defending )
+log_FIFA_players$dribbling <- log(log_FIFA_players$dribbling +1)
+log_FIFA_players$physic <- log(log_FIFA_players$physic +1)
+log_FIFA_players$contract_due_in<- log(log_FIFA_players$contract_due_in +1 )
+
+
+```
+
+## pearson coefficient matrix
+```{r echo=FALSE, fig.height=5, fig.width=7, fig.cap="Correlation Matrix"}
+suppressWarnings(chart.Correlation(log_FIFA_players[, 5: 15], histogram=TRUE, pch=20))
+```
+
+The Pearson correlation matrix clearly shows Pearson relationship between variables and I use .6 as a significant level to check whether variables are highly related. Here, I wipe out the predictor "overall" since it has coefficients larger than .6 with many other  predictors. Then, the high correlation appears between shooting & passing and passing
+& dribbling as well as shooting & dribbling. Hence, I decided to drop passing and dribbling. I keep "shooting" since it is a crucial factor evaluating the attack ability.
+
+Besides, players on different positions have quite different strengths and abilities, random effect of positions is important for variables: pace + shooting + defending+ physic. On the other hand, "wage, reputation, and contract" are easily affected by the leagues . Thus, I varied the slopes and intercepts of "wage, reputation, and contract" on different leagues. 
+
+The model and the results are below, all variables here are considered as statistically significant at α = 0.5 level.:
+## FIT THE MODEL
+```{r}
+fit_FIFA <- lmer(value_eur ~  age  + wage_eur + international_reputation + pace + shooting + defending+ physic + contract_due_in
+              + ( 1+ pace + shooting + defending+ physic | official_position)
+              + (1 + wage_eur + international_reputation + contract_due_in| league_name),
+              data = log_FIFA_players,
+              REML = FALSE)
+summary(fit_FIFA)
+
+```
+
+The following plots show the random effect of positions and leagues:
+```{r include=TRUE, echo=FALSE}
+round(ranef(fit_FIFA)$official_position, digits = 2)[1:10, ]
+round(ranef(fit_FIFA)$league_name, digits = 2)[1:10, ]
+dotplot(ranef(fit_FIFA), condVar=T)
+```
+This plot could illustrate that the clubs prefer to offer high price to players with good defending and shooting skills regardless the positions:
+```{r echo=FALSE, fig.height=5, fig.width=8, fig.cap="Random Effect of NBA Model"}
+position_level <- REsim(fit_FIFA, n.sims = 1000) %>% filter(groupFctr == "official_position")
+
+position_level$term <- factor(position_level$term); position_level$groupID <- factor(position_level$groupID)
+ggplot(position_level) + 
+  geom_pointrange(aes(x = groupID, y = mean, ymax = mean+2*sd, ymin = mean-2*sd, group = term, color = term)) +
+  facet_wrap(~term, ncol = 3) + ylab("Random Effect") + xlab("Position") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 7)) + theme(legend.position = "none")
+```
+
+\newpage
+
+## Result
+
+### Interpretation
+
+From the model fitting above,  I get the following formula of fixed effect: 
+$$ log(wage_eu + 1) = -10.79  -2.88\times log(age + 1) + 0.60 \times log(wage_eur + 1) + 0.80 \times log(international_reputation + 1) $$ 
+$$ + 1.32 \times log(pace + 1) + 2.76 \times log(shooting + 1) + 2.33 \times log(defending +1) + 0.39 \times log(physic +1) + 0.15 \times log(contract_due_in +1)$$
+
+Then add the random effect of position to the intercepts and slopes and get the estimated formula, here I take the "CAM" position English Premier League as an example: 
+$$ log(wage_eu + 1) = -6.53  -2.88\times log(age + 1) + 0.66 \times log(wage_eur + 1) + 0.81 \times log(international_reputation + 1) $$ 
+$$ + 1.41 \times log(pace + 1) + 3.96 \times log(shooting + 1) + 0.23 \times log(defending +1) + 0.24 \times log(physic +1) + 0.11 \times log(contract_due_in +1)$$
+In the formula, all the parameters are positive except age. It’s natural that the parameter of age is negative since the performance of players usually decrease since he becomes older. 
+In the model, for every increase 1% of player’s defending ability, the prediction of transfer market value increase 23% for the players in "CAM" position in English Premier League. All the parameters are changing from positions to position, league to league.
+
+Besides, I also find that CAM in English Premier League has higher value compared to the average (-6.53 v.s. -10.79) among all leagues. This is understandable since the market value of the English Premier League is highest in the world, so their players are more famous. 
+
+
+## Model checking
+The residual plot and the Q-Q plot really show that the model fitted well above
+```{r}
+# residual_plot <- plot(fit_FIFA)
+# qq_plot      <- qqmath(fit_FIFA)
+# grid.arrange(residul_plot, qq_plot, ncol = 2)
+```
+
+## Discussion
+In this report, multilevel model is used to figure out the relationship between players’ value and their abilities, contract as well as reputation. Random effects from positions and leagues are also included in the model.
+The results basically show that the value of the players on different positions and leagues are affected more or less by different factors.
+
+\newpage
+
+## Appendix
+```{r include=FALSE}
+#EDA GGPLOT
+#Value v.s. Wage
+wage_eur_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(wage_eur + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs wage_eur(by positions)", x = "log(wage_eur)", y = "log(Value)")
+wage_eur_positions
+
+wage_eur_league <- ggplot(data = FIFA_players) + 
+  aes(x = log(wage_eur + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs wage_eur Score(by leagues)", x = "log(wage_eur)", y = "log(Value)")
+wage_eur_league
+
+
+## Value v.s. age in different groups:
+age_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(age + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Age (by positions)", x = "log(Age)", y = "log(Value)")
+age_positions
+
+age_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(age + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Age (by leagues)", x = "log(Age)", y = "log(Value)")
+age_leagues
+
+
+## Value v.s. Potentials in different groups:
+gap_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(potential + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Gap (by positions)", x = "log(Gap)", y = "log(Value)")
+gap_positions
+
+gap_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(potential + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Gap (by leagues)", x = "log(Gap)", y = "log(Value)")
+gap_leagues
+
+
+## Value vs contract due date
+contract_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(contract_due_in + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Contract_due (by positions)", x = "log(Contract_due)", y = "log(Value)")
+contract_positions
+
+contract_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(contract_due_in + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs Contract_due (by leagues)", x = "log(Contract_due)", y = "log(Value)")
+contract_leagues
+
+
+## Value vs international reputation
+reputate_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(international_reputation + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs reputation (by positions)", x = "log(reputation)", y = "log(Value)")
+reputate_positions
+
+reputate_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(international_reputation + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs reputation (by leagues)", x = "log(reputation)", y = "log(Value)")
+reputate_leagues
+
+## Value vs pace
+
+pace_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(pace + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs pace (by positions)", x = "log(pace)", y = "log(Value)")
+pace_positions
+
+pace_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(pace + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs pace (by leagues)", x = "log(pace)", y = "log(Value)")
+pace_leagues
+
+
+## Value vs shooting
+shooting_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(shooting + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs shooting (by positions)", x = "log(shooting)", y = "log(Value)")
+shooting_positions
+
+shooting_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(shooting + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs shooting (by leagues)", x = "log(shooting)", y = "log(Value)")
+shooting_leagues
+
+
+## Value vs passing
+passing_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(passing + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs passing (by positions)", x = "log(passing)", y = "log(Value)")
+passing_positions
+
+passing_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(passing + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs passing (by leagues)", x = "log(passing)", y = "log(Value)")
+passing_leagues
+
+
+## Value vs defending
+defending_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(defending + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs defending (by positions)", x = "log(defending)", y = "log(Value)")
+defending_positions
+
+defending_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(defending + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs defending (by leagues)", x = "log(defending)", y = "log(Value)")
+defending_leagues
+
+
+## Value vs dribbling
+dribbling_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(dribbling + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs dribbling (by positions)", x = "log(dribbling)", y = "log(Value)")
+dribbling_positions
+
+dribbling_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(dribbling + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs dribbling (by leagues)", x = "log(dribbling)", y = "log(Value)")
+dribbling_leagues
+
+
+## Value vs physic
+physic_positions <- ggplot(data = FIFA_players) + 
+  aes(x = log(physic + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(official_position)), size = .6) + 
+  geom_smooth(aes(color = factor(official_position)), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs physic (by positions)", x = "log(physic)", y = "log(Value)")
+physic_positions
+
+physic_leagues <- ggplot(data = FIFA_players) + 
+  aes(x = log(physic + 1), y = log(value_eur)) + 
+  geom_point(aes(color = factor(league_name)), size = .6) + 
+  geom_smooth(aes(color = league_name), method = "lm", se = FALSE, formula = 'y ~ x') + 
+  labs(title = "Value vs physic (by leagues)", x = "log(physic)", y = "log(Value)")
+physic_leagues
+```
+
+
+
+
+
